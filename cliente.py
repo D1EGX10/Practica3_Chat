@@ -6,6 +6,7 @@ ip_servidor = "127.0.0.1"
 puerto_servidor = 5500
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.bind(("0.0.0.0", 0))   
 
 nombre_usuario = input("Pon tu nombre en el chat: ")
 
@@ -18,7 +19,12 @@ def mandar_json(data):
 def recibir():
     """Hilo que recibe todo lo que diga el servidor."""
     while True:
-        data, _ = sock.recvfrom(65535)
+        try:
+            data, _ = sock.recvfrom(65535)
+        except Exception as e:
+            print("Error en recv:", e)
+            break
+
         try:
             info = json.loads(data.decode())
         except:
@@ -94,3 +100,4 @@ while True:
 
     else:
         print("Comando no reconocido.")
+
