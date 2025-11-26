@@ -1,109 +1,110 @@
 import socket
-import json
+import threading
 import base64
-ip = "0.0.0.0"
-puerto = 5500
+import os
+IP = "0.0.0.0"
+PORT = 5000
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.bind((ip, puerto))
-print(f"Servidor listo en puerto {puerto}")
-usuarios = {}        
-salas = {}          
-def mandar(dest, data):
-    mensaje = json.dumps(data).encode()
-    sock.sendto(mensaje, dest)
+sock.bind((IP, PORT))
+salas = {
+    "sala1": set(),
+    "sala2": set(),
+    "sala3": set()
+}
+usuarios = {}  
 
-def mandar_a_sala(sala, data):
-    if sala not in salas:
-        return
+print("Servidor iniciado en puerto", PORT)
 
-    mensaje = json.dumps(data).encode()
+def enviar(addr, mensaje):
+    sock.sendto(mensaje.encode(), addr)
 
-    for usuario in salas[sala]:
-        destino = usuarios.get(usuario)
-        if destino:
-            sock.sendto(mensaje, destino)
+def enviar_sala(sala, mensaje):
+    for u in salas[sala]:
+        enviar(usuarios[u], mensaje)
 
-while True:
-    data, cliente = sock.recvfrom(65535)
+def lista_usuarios(sala):
+    if not salas[sala]:
+        return "Nadie está en la sala."
+    return "Usuarios actuales: " + ", ".join(salas[sala])
 
+def manejar_mensaje(data, addr):
     try:
-        info = json.loads(data.decode())
+        texto = data.decode()
     except:
-        continue
+        return
+    partes = texto.split(" ", 2)
 
-    tipo = info.get("tipo")
+    if len(partes) < 2:
+        return
+    comando = partes[0]
+    usuario = partes[1]
 
-    if tipo == "registrar":
-        nombre = info["nombre"]
-        usuarios[nombre] = cliente
-        continue
+    usuarios[usuario] = addr  
 
-    if tipo == "entrar_sala":
-        sala = info["sala"]
-        nombre = info["nombre"]
+    if comando == "ENTER":
+        sala = partes[2]
 
-        if sala not in salas:
-            salas[sala] = []
+        if sala in salas:
 
-        if nombre not in salas[sala]:
-            salas[sala].append(nombre)
+            if usuario not in salas[sala]:
+                salas[sala].add(usuario)
 
-        mandar(cliente, {
-            "tipo": "ok",
-            "msg": f"Entraste a {sala}"
-        })
+                enviar_sala(sala, f"[Servidor] {usuario} ha entrado a {sala}")
 
-        mandar_a_sala(sala, {
-            "tipo": "mensaje_sala",
-            "sala": sala,
-            "de": "SERVIDOR",
-            "contenido": f"{nombre} entró a la sala"
-        })
+                enviar_sala(sala, f"[Servidor] {lista_usuarios(sala)}")
 
-        mandar(cliente, {
-            "tipo": "lista_usuarios",
-            "sala": sala,
-            "contenido": salas[sala]
-        })
+            enviar(addr, f"[Servidor] Entraste a {sala}")
+        else:
+            enviar(addr, "[Servidor] Esa sala no existe.")
 
-    elif tipo == "salir_sala":
-        sala = info["sala"]
-        nombre = info["nombre"]
+    elif comando == "LEAVE":
+        sala = partes[2]
+        if sala in salas and usuario in salas[sala]:
 
-        if sala in salas and nombre in salas[sala]:
-            salas[sala].remove(nombre)
+            salas[sala].remove(usuario)
 
-            mandar_a_sala(sala, {
-                "tipo": "mensaje_sala",
-                "sala": sala,
-                "de": "SERVIDOR",
-                "contenido": f"{nombre} salió de la sala"
-            })
+            enviar_sala(sala, f"[Servidor] {usuario} ha salido de {sala}")
 
-    elif tipo == "mensaje_sala":
-        sala = info["sala"]
-        mandar_a_sala(sala, info)
+            enviar_sala(sala, f"[Servidor] {lista_usuarios(sala)}")
 
-    elif tipo == "privado":
-        destino = info["para"]
+            enviar(addr, f"[Servidor] Saliste de {sala}")
+        else:
+            enviar(addr, "[Servidor] No estás en esa sala.")
 
-        if destino not in usuarios:
-            mandar(cliente, {
-                "tipo": "privado",
-                "de": "SERVIDOR",
-                "contenido": f"Usuario {destino} no existe"
-            })
-            continue
+    elif comando == "LEAVEALL":
+        for sala in salas:
+            if usuario in salas[sala]:
+                salas[sala].remove(usuario)
+                enviar_sala(sala, f"[Servidor] {usuario} ha salido de {sala}")
+                enviar_sala(sala, f"[Servidor] {lista_usuarios(sala)}")
 
-        mandar(usuarios[destino], info)
-    elif tipo == "audio":
-        destino = info["para"]
+        enviar(addr, "[Servidor] Saliste de todas las salas.")
 
-        if destino not in usuarios:
-            mandar(cliente, {
-                "tipo": "privado",
-                "de": "SERVIDOR",
-                "contenido": f"Usuario {destino} no existe"
-            })
-            continue
-        mandar(usuarios[destino], info)
+    elif comando == "MSG":
+        sala, mensaje = partes[2].split(" ", 1)
+
+        if sala in salas and usuario in salas[sala]:
+            for u in salas[sala]:
+                enviar(usuarios[u], f"[{sala}] {usuario}: {mensaje}")
+        else:
+            enviar(addr, "[Servidor] No estás en esa sala.")
+
+    elif comando == "PRIV":
+        destino, mensaje = partes[2].split(" ", 1)
+        if destino in usuarios:
+            enviar(usuarios[destino], f"[Privado de {usuario}] {mensaje}")
+        else:
+            enviar(addr, "[Servidor] Ese usuario no existe.")
+
+    elif comando == "AUDIO":
+        destino, archivo_b64 = partes[2].split(" ", 1)
+        if destino in usuarios:
+            sock.sendto(data, usuarios[destino])
+        else:
+            enviar(addr, "[Servidor] Ese usuario no existe.")
+
+def recibir():
+    while True:
+        data, addr = sock.recvfrom(65535)
+        threading.Thread(target=manejar_mensaje, args=(data, addr)).start()
+recibir()
