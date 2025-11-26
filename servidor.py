@@ -2,23 +2,20 @@ import socket
 import json
 import threading
 salas = {}
+usuarios = {}
 
 ip_servidor = "0.0.0.0"
 puerto_servidor = 5500
-
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.bind((ip_servidor, puerto_servidor))
-
 print("SERVIDOR LISTO en puerto", puerto_servidor)
-
 def mandar_json(direccion, data):
     """Envia diccionario como JSON a un cliente."""
     try:
         mensaje = json.dumps(data).encode()
         sock.sendto(mensaje, direccion)
     except Exception as e:
-        print("Error mandando JSON:", e)
-
+        print("Error mandando JSON a", direccion, e)
 def avisar_lista_usuarios(nombre_sala):
     """Cada que alguien entra o sale, avisamos a todos en esa sala."""
     if nombre_sala not in salas:
@@ -34,13 +31,12 @@ def avisar_lista_usuarios(nombre_sala):
     for usuario, direccion in salas[nombre_sala].items():
         mandar_json(direccion, aviso)
 
-
 def procesar_paquete(data, direccion):
-    """Aquí cae TODO lo que manden los clientes."""
+    """Procesa paquetes entrantes del cliente."""
     try:
         info = json.loads(data.decode())
-    except:
-        print("Mensaje no entendible:", data)
+    except Exception as e:
+        print("Mensaje no entendible:", data, e)
         return
 
     tipo = info.get("tipo")
@@ -53,10 +49,10 @@ def procesar_paquete(data, direccion):
             salas[sala] = {}
 
         salas[sala][usuario] = direccion
-        print(f"[{sala}] ENTRA {usuario}")
+        usuarios[usuario] = direccion 
+        print(f"[{sala}] ENTRA {usuario} desde {direccion}")
 
         avisar_lista_usuarios(sala)
-
 
     elif tipo == "salir_sala":
         sala = info["sala"]
@@ -65,16 +61,17 @@ def procesar_paquete(data, direccion):
         if sala in salas and usuario in salas[sala]:
             del salas[sala][usuario]
             print(f"[{sala}] SALE {usuario}")
+            esta_en_otra = any(usuario in s for s in salas.values())
+            if not esta_en_otra and usuario in usuarios:
+                del usuarios[usuario]
 
             avisar_lista_usuarios(sala)
-
     elif tipo == "mensaje_sala":
         sala = info["sala"]
         usuario = info["de"]
         texto = info["contenido"]
 
         print(f"[{sala}] {usuario} dice: {texto}")
-
         if sala in salas:
             for otro, direccion_otro in salas[sala].items():
                 if otro != usuario:
@@ -87,20 +84,27 @@ def procesar_paquete(data, direccion):
 
         print(f"[PRIVADO] {usuario} -> {destino}: {texto}")
 
-        for s in salas.values():
-            if destino in s:
-                mandar_json(s[destino], info)
-                break
+        if destino in usuarios:
+            mandar_json(usuarios[destino], info)
+            mandar_json(direccion, {"tipo": "error", "contenido": f"Privado enviado a {destino}"})
+        else:
+            mandar_json(direccion, {"tipo": "error", "contenido": f"Usuario {destino} no conectado"})
+
+    else:
+        print("Tipo no reconocido:", tipo, "de", direccion)
 
 def escuchar():
     """Hilo principal que recibe datagramas UDP."""
     while True:
         data, direccion = sock.recvfrom(65535)
-        procesar_paquete(data, direccion)
+        # procesar cada paquete en un hilo para no bloquear
+        threading.Thread(target=procesar_paquete, args=(data, direccion), daemon=True).start()
 
 hilo = threading.Thread(target=escuchar, daemon=True)
 hilo.start()
-
-
 while True:
-    pass
+    try:
+        pass
+    except KeyboardInterrupt:
+        print("Servidor detenido.")
+        break
